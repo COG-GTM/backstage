@@ -127,6 +127,22 @@ export function createOAuthRouteHandlers<TProfile>(
     additionalScopes: options.additionalScopes,
   });
 
+  // Only allow redirecting back to origins that pass the configured
+  // allow-list, and only over http(s). This prevents the OAuth state from
+  // being used as an open redirect to arbitrary external sites.
+  const isRedirectUrlAllowed = (redirectUrl: string): boolean => {
+    let url: URL;
+    try {
+      url = new URL(redirectUrl);
+    } catch {
+      return false;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return false;
+    }
+    return isOriginAllowed(url.origin);
+  };
+
   return {
     async start(
       this: never,
@@ -255,6 +271,9 @@ export function createOAuthRouteHandlers<TProfile>(
               'No redirectUrl provided in request query parameters',
             );
           }
+          if (!isRedirectUrlAllowed(state.redirectUrl)) {
+            throw new NotAllowedError(`Redirect URL origin is not allowed`);
+          }
           res.redirect(state.redirectUrl);
           return;
         }
@@ -269,7 +288,11 @@ export function createOAuthRouteHandlers<TProfile>(
           ? error
           : new Error('Encountered invalid error'); // Being a bit safe and not forwarding the bad value
 
-        if (state?.flow === 'redirect' && state?.redirectUrl) {
+        if (
+          state?.flow === 'redirect' &&
+          state?.redirectUrl &&
+          isRedirectUrlAllowed(state.redirectUrl)
+        ) {
           const redirectUrl = new URL(state.redirectUrl);
           redirectUrl.searchParams.set('error', message);
 

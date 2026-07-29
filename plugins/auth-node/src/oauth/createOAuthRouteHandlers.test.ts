@@ -1474,5 +1474,80 @@ describe('createOAuthRouteHandlers', () => {
       const errorMessage = redirectUrl.searchParams.get('error');
       expect(errorMessage).toBe('Auth response is missing cookie nonce');
     });
+
+    it('should not open-redirect to a disallowed origin on the error path', async () => {
+      const app = wrapInApp(
+        createOAuthRouteHandlers({
+          ...baseConfig,
+          isOriginAllowed: origin => origin === 'http://127.0.0.1',
+        }),
+      );
+      const res = await request(app)
+        .get('/my-provider/handler/frame')
+        .query({
+          state: encodeOAuthState({
+            env: 'development',
+            nonce: '123',
+            flow: 'redirect',
+            redirectUrl: 'https://evil.com',
+          }),
+        });
+
+      // The attacker-controlled redirect must not happen; instead the error is
+      // posted back through the web message flow to the default app origin.
+      expect(res.status).toBe(200);
+      expect(res.header.location).toBeUndefined();
+      expect(parseWebMessageResponse(res.text).response).toEqual({
+        type: 'authorization_response',
+        error: {
+          name: 'NotAllowedError',
+          message: 'Auth response is missing cookie nonce',
+        },
+      });
+    });
+
+    it('should reject a redirect to a disallowed origin on the success path', async () => {
+      const agent = request.agent(
+        wrapInApp(
+          createOAuthRouteHandlers({
+            ...baseConfig,
+            isOriginAllowed: origin => origin === 'http://127.0.0.1',
+            signInResolver: async () => ({ token: mockBackstageToken }),
+          }),
+        ),
+      );
+
+      agent.jar.setCookie(
+        'my-provider-nonce=123',
+        '127.0.0.1',
+        '/my-provider/handler',
+      );
+
+      mockAuthenticator.authenticate.mockResolvedValue({
+        fullProfile: { id: 'id' } as PassportProfile,
+        session: mockSession,
+      });
+
+      const res = await agent.get('/my-provider/handler/frame').query({
+        state: encodeOAuthState({
+          env: 'development',
+          nonce: '123',
+          flow: 'redirect',
+          redirectUrl: 'https://evil.com',
+        } as OAuthState),
+      });
+
+      // The authenticated success path must also refuse the disallowed origin
+      // and fall back to the web message response rather than redirecting.
+      expect(res.status).toBe(200);
+      expect(res.header.location).toBeUndefined();
+      expect(parseWebMessageResponse(res.text).response).toEqual({
+        type: 'authorization_response',
+        error: {
+          name: 'NotAllowedError',
+          message: 'Redirect URL origin is not allowed',
+        },
+      });
+    });
   });
 });
