@@ -88,7 +88,11 @@ const customHomePageModule = createFrontendModule({
           function CustomHomePageLayout({ widgets }: HomePageLayoutProps) {
             return (
               <Page themeId="home">
-                <Header title={<WelcomeTitle />} pageTitleOverride="Home">
+                <Header
+                  title={<WelcomeTitle />}
+                  subtitle="Your developer portal, all in one place"
+                  pageTitleOverride="Home"
+                >
                   <HeaderWorldClock clockConfigs={clockConfigs} />
                 </Header>
                 <Content>
