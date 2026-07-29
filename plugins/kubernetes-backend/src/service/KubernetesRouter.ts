@@ -27,7 +27,7 @@ import express from 'express';
 import Router from 'express-promise-router';
 
 import { DispatchStrategy } from '../auth';
-import { NotAllowedError } from '@backstage/errors';
+import { InputError, NotAllowedError } from '@backstage/errors';
 
 import {
   AuthService,
@@ -51,7 +51,11 @@ import { ObjectsByEntityRequest } from '../types/types';
 import { KubernetesProxy } from './KubernetesProxy';
 import { requirePermission } from '../auth/requirePermission';
 import { CatalogService } from '@backstage/plugin-catalog-node';
-import { stringifyEntityRef } from '@backstage/catalog-model';
+import {
+  CompoundEntityRef,
+  parseEntityRef,
+  stringifyEntityRef,
+} from '@backstage/catalog-model';
 
 export interface KubernetesEnvironment {
   logger: LoggerService;
@@ -209,12 +213,28 @@ export class KubernetesRouter {
           httpAuth,
           req,
         );
+        if (!entityRef) {
+          throw new InputError('entity is a required field');
+        }
+        let compoundEntityRef: CompoundEntityRef;
+        try {
+          compoundEntityRef = parseEntityRef(entityRef);
+        } catch (error) {
+          throw new InputError(`Invalid entity ref, ${error}`);
+        }
+        const credentials = await httpAuth.credentials(req);
+        const entity = await catalog.getEntityByRef(compoundEntityRef, {
+          credentials,
+        });
+        if (!entity) {
+          throw new InputError(`Entity ref missing, ${entityRef}`);
+        }
         const response = await objectsProvider.getKubernetesObjectsByEntity(
           {
-            entity: requestBody?.entity,
+            entity,
             auth: requestBody?.auth || {},
           },
-          { credentials: await httpAuth.credentials(req) },
+          { credentials },
         );
         res.json(response);
         auditorEvent
@@ -228,7 +248,7 @@ export class KubernetesRouter {
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         await auditorEvent.fail({ error: err });
-        if (e instanceof NotAllowedError) {
+        if (e instanceof NotAllowedError || e instanceof InputError) {
           throw e;
         }
         logger.error(
