@@ -54,6 +54,8 @@ import {
   kubernetesServiceLocatorExtensionPoint,
 } from '@backstage/plugin-kubernetes-node';
 import { ExtendedHttpServer } from '@backstage/backend-defaults/rootHttpRouter';
+import { catalogServiceMock } from '@backstage/plugin-catalog-node/testUtils';
+import { Entity } from '@backstage/catalog-model';
 
 describe('API integration tests', () => {
   let app: ExtendedHttpServer;
@@ -72,6 +74,21 @@ describe('API integration tests', () => {
 
   const happyK8SResult = {
     items: [{ clusterOne: { pods: [{ metadata: { name: 'pod1' } }] } }],
+  };
+  const catalogEntity: Entity = {
+    apiVersion: 'backstage.io/v1alpha1',
+    kind: 'Component',
+    metadata: {
+      name: 'test-service',
+      namespace: 'default',
+      annotations: { 'backstage.io/kubernetes-id': 'test-service' },
+    },
+  };
+  const catalogService = catalogServiceMock.factory({
+    entities: [catalogEntity],
+  });
+  const entityRequestBody = {
+    entity: { kind: 'Component', metadata: { name: 'test-service' } },
   };
   const minimalValidConfigService = mockServices.rootConfig.factory({
     data: {
@@ -102,6 +119,7 @@ describe('API integration tests', () => {
       features: [
         minimalValidConfigService,
         auditor.factory,
+        catalogService,
         mockServices.permissions.factory({ result: AuthorizeResult.DENY }),
         import('@backstage/plugin-kubernetes-backend'),
       ],
@@ -118,27 +136,11 @@ describe('API integration tests', () => {
       getCustomResourcesByEntity: jest.fn().mockResolvedValue(happyK8SResult),
     };
 
-    jest.mock('@backstage/catalog-client', () => ({
-      CatalogClient: jest.fn().mockReturnValue({
-        getEntityByRef: jest.fn().mockImplementation(async entityRef => {
-          if (entityRef.name === 'noentity') {
-            return undefined;
-          }
-          return {
-            kind: entityRef.kind,
-            metadata: {
-              name: entityRef.name,
-              namespace: entityRef.namespace,
-            },
-          };
-        }),
-      }),
-    }));
-
     const { server } = await startTestBackend({
       features: [
         minimalValidConfigService,
         auditor.factory,
+        catalogService,
         import('@backstage/plugin-kubernetes-backend'),
         import('@backstage/plugin-permission-backend'),
         import('@backstage/plugin-permission-backend-module-allow-all-policy'),
@@ -359,9 +361,10 @@ describe('API integration tests', () => {
 
   describe('post /services/:serviceId', () => {
     it('happy path: lists kubernetes objects without auth in request body', async () => {
-      const response = await request(app).post(
-        '/api/kubernetes/services/test-service',
-      );
+      const response = await request(app)
+        .post('/api/kubernetes/services/test-service')
+        .send(entityRequestBody)
+        .set('Content-Type', 'application/json');
       expect(response.status).toEqual(200);
       expect(response.body).toEqual(happyK8SResult);
       expect(auditor.createEvent).toHaveBeenCalledWith({
@@ -369,7 +372,7 @@ describe('API integration tests', () => {
         request: expect.anything(),
         meta: {
           queryType: 'services',
-          entityRef: undefined,
+          entityRef: 'component:default/test-service',
           serviceId: 'test-service',
         },
       });
@@ -380,33 +383,74 @@ describe('API integration tests', () => {
     it('happy path: lists kubernetes objects with auth in request body', async () => {
       const response = await request(app)
         .post('/api/kubernetes/services/test-service')
-        .send({ auth: { google: 'google_token_123' } })
+        .send({ ...entityRequestBody, auth: { google: 'google_token_123' } })
         .set('Content-Type', 'application/json');
       expect(response.status).toEqual(200);
       expect(response.body).toEqual(happyK8SResult);
     });
 
-    it('includes entityRef in audit metadata when entity is present', async () => {
+    it('resolves the entity from the catalog, ignoring the request body annotations', async () => {
       const response = await request(app)
         .post('/api/kubernetes/services/test-service')
         .send({
           entity: {
             kind: 'Component',
-            metadata: { name: 'my-service', namespace: 'default' },
+            metadata: {
+              name: 'test-service',
+              annotations: {
+                'backstage.io/kubernetes-label-selector': 'app=victim',
+                'backstage.io/kubernetes-namespace': 'kube-system',
+              },
+            },
           },
         })
         .set('Content-Type', 'application/json');
 
       expect(response.status).toEqual(200);
-      expect(auditor.createEvent).toHaveBeenCalledWith({
-        eventId: 'resource-fetch',
-        request: expect.anything(),
-        meta: {
-          queryType: 'services',
-          entityRef: 'component:default/my-service',
-          serviceId: 'test-service',
-        },
-      });
+      expect(
+        objectsProviderMock.getKubernetesObjectsByEntity,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ entity: catalogEntity }),
+        expect.anything(),
+      );
+    });
+
+    it('returns 400 when the entity is missing from the request body', async () => {
+      const response = await request(app).post(
+        '/api/kubernetes/services/test-service',
+      );
+
+      expect(response.status).toEqual(400);
+      expect(
+        objectsProviderMock.getKubernetesObjectsByEntity,
+      ).not.toHaveBeenCalled();
+      expect(auditEvent.fail).toHaveBeenCalled();
+      expect(auditEvent.success).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when the entity is not in the catalog', async () => {
+      const response = await request(app)
+        .post('/api/kubernetes/services/test-service')
+        .send({
+          entity: {
+            kind: 'Component',
+            metadata: {
+              name: 'not-in-catalog',
+              annotations: {
+                'backstage.io/kubernetes-label-selector': 'app=victim',
+              },
+            },
+          },
+        })
+        .set('Content-Type', 'application/json');
+
+      expect(response.status).toEqual(400);
+      expect(response.body.error.message).toEqual(
+        'Entity ref missing, component:default/not-in-catalog',
+      );
+      expect(
+        objectsProviderMock.getKubernetesObjectsByEntity,
+      ).not.toHaveBeenCalled();
     });
 
     it('internal error: lists kubernetes objects', async () => {
@@ -414,9 +458,10 @@ describe('API integration tests', () => {
         Error('some internal error'),
       );
 
-      const response = await request(app).post(
-        '/api/kubernetes/services/test-service',
-      );
+      const response = await request(app)
+        .post('/api/kubernetes/services/test-service')
+        .send(entityRequestBody)
+        .set('Content-Type', 'application/json');
 
       expect(response.status).toEqual(500);
       expect(response.body).toEqual({ error: 'some internal error' });
@@ -465,6 +510,7 @@ describe('API integration tests', () => {
       const { server } = await startTestBackend({
         features: [
           minimalValidConfigService,
+          catalogService,
           import('@backstage/plugin-kubernetes-backend'),
           withClusters(clusters),
           createBackendModule({
@@ -497,7 +543,8 @@ describe('API integration tests', () => {
 
       const response = await request(app)
         .post('/api/kubernetes/services/test-service')
-        .send({ entity: { metadata: { name: 'thing' } } });
+        .send(entityRequestBody)
+        .set('Content-Type', 'application/json');
 
       expect(response.body).toEqual({
         items: [
@@ -528,6 +575,7 @@ describe('API integration tests', () => {
       const { server } = await startTestBackend({
         features: [
           minimalValidConfigService,
+          catalogService,
           import('@backstage/plugin-kubernetes-backend'),
           withClusters([
             {
@@ -581,10 +629,8 @@ describe('API integration tests', () => {
 
       await request(app)
         .post('/api/kubernetes/services/test-service')
-        .send({
-          entity: { metadata: { name: 'thing' } },
-          auth: { custom: 'custom-token' },
-        });
+        .send({ ...entityRequestBody, auth: { custom: 'custom-token' } })
+        .set('Content-Type', 'application/json');
 
       expect(mockFetcher.fetchObjectsForService).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -617,9 +663,10 @@ describe('API integration tests', () => {
         new Error('services audit failed'),
       );
 
-      const response = await request(app).post(
-        '/api/kubernetes/services/test-service',
-      );
+      const response = await request(app)
+        .post('/api/kubernetes/services/test-service')
+        .send(entityRequestBody)
+        .set('Content-Type', 'application/json');
 
       expect(response.status).toEqual(200);
       expect(response.body).toEqual(happyK8SResult);
