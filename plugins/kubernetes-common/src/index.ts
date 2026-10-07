@@ -24,6 +24,7 @@ export * from './types';
 export * from './catalog-entity-constants';
 export * from './certificate-authority-constants';
 export {
+  RESOURCE_TYPE_KUBERNETES_CLUSTER,
   kubernetesProxyPermission,
   kubernetesClustersReadPermission,
   kubernetesResourcesReadPermission,
