@@ -915,11 +915,21 @@ metadata:
     expect(response.status).toEqual(200);
     expect(response.body).toMatchObject({
       permissions: [
-        { type: 'basic', name: 'kubernetes.proxy', attributes: {} },
+        {
+          type: 'resource',
+          name: 'kubernetes.proxy',
+          attributes: {},
+          resourceType: 'kubernetes-cluster',
+        },
         { type: 'basic', name: 'kubernetes.resources.read', attributes: {} },
         { type: 'basic', name: 'kubernetes.clusters.read', attributes: {} },
       ],
-      rules: [],
+      rules: [
+        {
+          name: 'IS_CLUSTER_NAME',
+          resourceType: 'kubernetes-cluster',
+        },
+      ],
     });
   });
 

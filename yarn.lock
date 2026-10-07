@@ -5672,6 +5672,7 @@ __metadata:
     node-fetch: "npm:^2.7.0"
     supertest: "npm:^7.0.0"
     ws: "npm:^8.20.1"
+    zod: "npm:^3.25.76 || ^4.0.0"
   languageName: unknown
   linkType: soft
 

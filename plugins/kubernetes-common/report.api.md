@@ -10,6 +10,7 @@ import type { JsonObject } from '@backstage/types';
 import type { JsonValue } from '@backstage/types';
 import type { ObjectsByEntityResponse as ObjectsByEntityResponse_2 } from '@backstage/plugin-kubernetes-common';
 import type { PodStatus } from '@kubernetes/client-node';
+import { ResourcePermission } from '@backstage/plugin-permission-common';
 import type { V1ConfigMap } from '@kubernetes/client-node';
 import type { V1CronJob } from '@kubernetes/client-node';
 import type { V1DaemonSet } from '@kubernetes/client-node';
@@ -350,10 +351,13 @@ export type KubernetesErrorTypes =
 export type KubernetesFetchError = StatusError | RawFetchError;
 
 // @public
-export const kubernetesPermissions: BasicPermission[];
+export const kubernetesPermissions: (
+  | BasicPermission
+  | ResourcePermission<'kubernetes-cluster'>
+)[];
 
 // @public
-export const kubernetesProxyPermission: BasicPermission;
+export const kubernetesProxyPermission: ResourcePermission<'kubernetes-cluster'>;
 
 // @public (undocumented)
 export type KubernetesRequestAuth = {
@@ -453,6 +457,9 @@ export interface ReplicaSetsFetchResponse {
   // (undocumented)
   type: 'replicasets';
 }
+
+// @public
+export const RESOURCE_TYPE_KUBERNETES_CLUSTER = 'kubernetes-cluster';
 
 // @public (undocumented)
 export interface ResourceQuotaFetchResponse {

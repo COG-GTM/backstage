@@ -17,6 +17,7 @@ import { Config } from '@backstage/config';
 import {
   ANNOTATION_KUBERNETES_AUTH_PROVIDER,
   ANNOTATION_KUBERNETES_OIDC_TOKEN_PROVIDER,
+  RESOURCE_TYPE_KUBERNETES_CLUSTER,
   kubernetesClustersReadPermission,
   kubernetesPermissions,
   kubernetesResourcesReadPermission,
@@ -50,6 +51,7 @@ import { addResourceRoutesToRouter } from '../routes/resourcesRoutes';
 import { ObjectsByEntityRequest } from '../types/types';
 import { KubernetesProxy } from './KubernetesProxy';
 import { requirePermission } from '../auth/requirePermission';
+import { kubernetesClusterPermissionRules } from '../permissions';
 import { CatalogService } from '@backstage/plugin-catalog-node';
 import { stringifyEntityRef } from '@backstage/catalog-model';
 
@@ -179,7 +181,17 @@ export class KubernetesRouter {
     router.use(express.json());
     router.use(
       createPermissionIntegrationRouter({
+        resourceType: RESOURCE_TYPE_KUBERNETES_CLUSTER,
         permissions: kubernetesPermissions,
+        rules: Object.values(kubernetesClusterPermissionRules),
+        getResources: async clusterNames => {
+          const clusters = await clusterSupplier.getClusters({
+            credentials: await this.env.auth.getOwnServiceCredentials(),
+          });
+          return clusterNames.map(name =>
+            clusters.find(cluster => cluster.name === name),
+          );
+        },
       }),
     );
 

@@ -27,6 +27,7 @@ import {
   KubernetesRequestAuth,
 } from '@backstage/plugin-kubernetes-common';
 import { AuthorizeResult } from '@backstage/plugin-permission-common';
+import { createConditionAuthorizer } from '@backstage/plugin-permission-node';
 import type { Cluster } from '@kubernetes/client-node';
 import { createProxyMiddleware, RequestHandler } from 'http-proxy-middleware';
 import fs from 'fs-extra';
@@ -47,12 +48,17 @@ import {
   LoggerService,
   PermissionsService,
 } from '@backstage/backend-plugin-api';
+import { kubernetesClusterPermissionRules } from '../permissions';
 
 const PROXY_AUDIT_FINALIZER = Symbol('kubernetesProxyAuditFinalizer');
 const PROXY_SOCKET_CLOSE_LISTENER = Symbol(
   'kubernetesProxySocketCloseListener',
 );
 const PROXY_PREPARED_TARGET = Symbol('kubernetesProxyPreparedTarget');
+
+const isClusterAuthorized = createConditionAuthorizer(
+  Object.values(kubernetesClusterPermissionRules),
+);
 
 type ProxyAuditFinalizer = (error?: Error) => void;
 
@@ -194,18 +200,22 @@ export class KubernetesProxy {
     onSocketClose: () => void,
     isClientDisconnected: () => boolean,
   ): Promise<boolean> {
-    const authorizeResponse = await permissionApi.authorize(
-      [{ permission: kubernetesProxyPermission }],
-      { credentials: await this.httpAuth.credentials(req) },
-    );
-
-    if (authorizeResponse[0].result === AuthorizeResult.DENY) {
+    const deny = () => {
       req.socket.removeListener('close', onSocketClose);
       finalizeAudit(new NotAllowedError('Unauthorized'));
       res.status(403).json({
         error: serializeError(new NotAllowedError('Unauthorized')),
       });
       return false;
+    };
+
+    const [decision] = await permissionApi.authorizeConditional(
+      [{ permission: kubernetesProxyPermission }],
+      { credentials: await this.httpAuth.credentials(req) },
+    );
+
+    if (decision.result === AuthorizeResult.DENY) {
+      return deny();
     }
 
     if (isClientDisconnected()) {
@@ -213,8 +223,14 @@ export class KubernetesProxy {
       return false;
     }
 
-    const prepared = await this.prepareProxyTarget(req);
-    setResolvedClusterName(prepared.cluster.name);
+    const cluster = await this.getClusterForRequest(req);
+    setResolvedClusterName(cluster.name);
+
+    if (!isClusterAuthorized(decision, cluster)) {
+      return deny();
+    }
+
+    const prepared = await this.prepareProxyTarget(req, cluster);
     (req as any)[PROXY_PREPARED_TARGET] = prepared;
     const middleware = this.getOrCreateMiddleware(prepared.cluster);
 
@@ -239,8 +255,10 @@ export class KubernetesProxy {
    * completes under the caller's try/catch, avoiding unhandled rejections
    * from http-proxy-middleware's fire-and-forget upgrade() path.
    */
-  private async prepareProxyTarget(req: Request): Promise<PreparedProxyTarget> {
-    const cluster = await this.getClusterForRequest(req);
+  private async prepareProxyTarget(
+    req: Request,
+    cluster: ClusterDetails,
+  ): Promise<PreparedProxyTarget> {
     const url = new URL(cluster.url);
 
     const { bufferFromFileOrString } = await import('@kubernetes/client-node');
