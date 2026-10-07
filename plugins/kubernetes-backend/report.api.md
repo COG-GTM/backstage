@@ -8,6 +8,8 @@ import { AuthenticationStrategy } from '@backstage/plugin-kubernetes-node';
 import { AuthMetadata } from '@backstage/plugin-kubernetes-node';
 import { BackendFeature } from '@backstage/backend-plugin-api';
 import { ClusterDetails } from '@backstage/plugin-kubernetes-node';
+import { ConditionalPolicyDecision } from '@backstage/plugin-permission-common';
+import { Conditions } from '@backstage/plugin-permission-node';
 import { Config } from '@backstage/config';
 import { DiscoveryService } from '@backstage/backend-plugin-api';
 import { HttpAuthService } from '@backstage/backend-plugin-api';
@@ -18,8 +20,13 @@ import { KubernetesRequestAuth } from '@backstage/plugin-kubernetes-common';
 import type { KubernetesRequestBody } from '@backstage/plugin-kubernetes-common';
 import { LoggerService } from '@backstage/backend-plugin-api';
 import { ObjectToFetch } from '@backstage/plugin-kubernetes-node';
+import { PermissionCondition } from '@backstage/plugin-permission-common';
+import { PermissionCriteria } from '@backstage/plugin-permission-common';
+import { PermissionResourceRef } from '@backstage/plugin-permission-node';
+import { PermissionRule } from '@backstage/plugin-permission-node';
 import { PermissionsService } from '@backstage/backend-plugin-api';
 import { RequestHandler } from 'http-proxy-middleware';
+import { ResourcePermission } from '@backstage/plugin-permission-common';
 import { TokenCredential } from '@azure/identity';
 
 // @public (undocumented)
@@ -66,6 +73,12 @@ export class AzureIdentityStrategy implements AuthenticationStrategy {
   // (undocumented)
   validateCluster(): Error[];
 }
+
+// @public
+export const createKubernetesClusterConditionalDecision: (
+  permission: ResourcePermission<'kubernetes-cluster'>,
+  conditions: PermissionCriteria<PermissionCondition<'kubernetes-cluster'>>,
+) => ConditionalPolicyDecision;
 
 // @public (undocumented)
 export const DEFAULT_OBJECTS: ObjectToFetch[];
@@ -120,6 +133,38 @@ export const HEADER_KUBERNETES_AUTH: string;
 
 // @public
 export const HEADER_KUBERNETES_CLUSTER: string;
+
+// @public
+export const kubernetesClusterConditions: Conditions<{
+  isClusterName: PermissionRule<
+    ClusterDetails,
+    never,
+    'kubernetes-cluster',
+    {
+      clusterNames: string[];
+    }
+  >;
+}>;
+
+// @public
+export const kubernetesClusterPermissionResourceRef: PermissionResourceRef<
+  ClusterDetails,
+  never,
+  'kubernetes-cluster',
+  'kubernetes'
+>;
+
+// @public
+export const kubernetesClusterPermissionRules: {
+  isClusterName: PermissionRule<
+    ClusterDetails,
+    never,
+    'kubernetes-cluster',
+    {
+      clusterNames: string[];
+    }
+  >;
+};
 
 // @public (undocumented)
 export interface KubernetesObjectsProviderOptions {

@@ -28,6 +28,7 @@ import { AuthorizeResult } from '@backstage/plugin-permission-common';
 import {
   ANNOTATION_KUBERNETES_AUTH_PROVIDER,
   KubernetesRequestAuth,
+  kubernetesProxyPermission,
 } from '@backstage/plugin-kubernetes-common';
 import { getMockReq, getMockRes } from '@jest-mock/express';
 import express from 'express';
@@ -55,6 +56,7 @@ import type { Request } from 'express';
 import { BackstageCredentials } from '@backstage/backend-plugin-api';
 import { MiddlewareFactory } from '@backstage/backend-defaults/rootHttpRouter';
 import { AnonymousStrategy } from '../auth';
+import { createKubernetesClusterConditionalDecision } from '../permissions';
 
 const middleware = MiddlewareFactory.create({
   logger: mockServices.logger.mock(),
@@ -220,7 +222,7 @@ describe('KubernetesProxy', () => {
 
     it('emits failed audit events on permission denial with unknown cluster name', async () => {
       const deniedPermissionApi = mockServices.permissions.mock();
-      deniedPermissionApi.authorize.mockResolvedValue([
+      deniedPermissionApi.authorizeConditional.mockResolvedValue([
         { result: AuthorizeResult.DENY },
       ]);
 
@@ -738,6 +740,105 @@ describe('KubernetesProxy', () => {
     await expect(
       proxy.createRequestHandler({ permissionApi })(req, res, next),
     ).rejects.toThrow(NotFoundError);
+  });
+
+  describe('per-cluster authorization', () => {
+    const conditionalPermissionApi = (clusterNames: string[]) => {
+      const api = mockServices.permissions.mock();
+      api.authorizeConditional.mockResolvedValue([
+        createKubernetesClusterConditionalDecision(kubernetesProxyPermission, {
+          rule: 'IS_CLUSTER_NAME',
+          resourceType: 'kubernetes-cluster',
+          params: { clusterNames },
+        }),
+      ]);
+      return api;
+    };
+
+    beforeEach(() => {
+      clusterSupplier.getClusters.mockResolvedValue([
+        {
+          name: 'dev-cluster',
+          url: 'https://localhost:9999',
+          authMetadata: {},
+        },
+        {
+          name: 'prod-cluster',
+          url: 'https://localhost:9998',
+          authMetadata: {},
+        },
+      ]);
+      authStrategy.getCredential.mockResolvedValue({
+        type: 'bearer token',
+        token: 'backend-service-account-token',
+      });
+    });
+
+    it('returns 403 without attaching backend credentials when the caller is not entitled to the requested cluster', async () => {
+      const upstream = jest.fn();
+      worker.use(
+        rest.get('https://localhost:9998/api', (_: any, res: any, ctx: any) => {
+          upstream();
+          return res(ctx.status(200), ctx.json({}));
+        }),
+      );
+      const permissions = conditionalPermissionApi(['dev-cluster']);
+
+      const req = buildMockRequest('prod-cluster', 'api');
+      const { res, next } = getMockRes();
+
+      await proxy.createRequestHandler({ permissionApi: permissions })(
+        req,
+        res,
+        next,
+      );
+
+      expect(permissions.authorizeConditional).toHaveBeenCalledWith(
+        [{ permission: kubernetesProxyPermission }],
+        expect.anything(),
+      );
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(authStrategy.getCredential).not.toHaveBeenCalled();
+      expect(req.headers.authorization).toBeUndefined();
+      expect(upstream).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+      expect(auditEvent.fail).toHaveBeenCalledWith({
+        error: expect.objectContaining({ name: 'NotAllowedError' }),
+      });
+      expect(auditEvent.success).not.toHaveBeenCalled();
+    });
+
+    it('proxies requests to clusters the caller is entitled to', async () => {
+      worker.use(
+        rest.get('https://localhost:9999/api', (req: any, res: any, ctx: any) =>
+          res(
+            ctx.status(200),
+            ctx.json({ authorization: req.headers.get('authorization') }),
+          ),
+        ),
+      );
+      const permissions = conditionalPermissionApi(['dev-cluster']);
+
+      const app = express().use(
+        Router()
+          .use(
+            '/mountpath',
+            proxy.createRequestHandler({ permissionApi: permissions }),
+          )
+          .use(middleware.error()),
+      );
+      const requestPromise = request(app)
+        .get('/mountpath/api')
+        .set(HEADER_KUBERNETES_CLUSTER, 'dev-cluster');
+      worker.use(rest.all(requestPromise.url, (req: any) => req.passthrough()));
+
+      const response = await requestPromise;
+
+      expect(response.status).toEqual(200);
+      expect(response.body).toEqual({
+        authorization: 'Bearer backend-service-account-token',
+      });
+    });
   });
 
   it('should pass the exact response from Kubernetes', async () => {

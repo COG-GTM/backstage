@@ -16,12 +16,23 @@
 
 import { createPermission } from '@backstage/plugin-permission-common';
 
-/** This permission is used to check access to the proxy endpoint
+/**
+ * The resource type used for Kubernetes clusters in the permission framework.
+ * @public
+ */
+export const RESOURCE_TYPE_KUBERNETES_CLUSTER = 'kubernetes-cluster';
+
+/** This permission is used to check access to the proxy endpoint.
+ *
+ * The resource reference is the name of the cluster targeted by the proxied
+ * request, which allows permission policies to restrict proxy access to
+ * specific clusters.
  * @public
  */
 export const kubernetesProxyPermission = createPermission({
   name: 'kubernetes.proxy',
   attributes: {},
+  resourceType: RESOURCE_TYPE_KUBERNETES_CLUSTER,
 });
 
 /** This permission is used to check access to the /resources and /services/:serviceId endpoints
