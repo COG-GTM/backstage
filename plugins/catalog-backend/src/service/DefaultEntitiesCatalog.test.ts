@@ -797,6 +797,26 @@ describe.each(databases.eachSupportedId())(
         await expect(page(3)).resolves.toEqual(['n1', 'n2', 'n3']);
         await expect(page(3, 1)).resolves.toEqual(['n2', 'n3', 'n4']);
 
+        // Offsets that skip past every Phase 1 entity land inside Phase 2
+        await expect(page(1, 2)).resolves.toEqual(['n3']);
+        await expect(page(2, 3)).resolves.toEqual(['n4']);
+        await expect(page(2, 4)).resolves.toEqual([]);
+        await expect(page(1, 1, 'desc')).resolves.toEqual(['n1']);
+
+        // The extra row fetched inside Phase 2 drives hasNextPage
+        const insidePhase2 = await catalog.entities({
+          order: [{ field: 'spec.b', order: 'asc' }],
+          pagination: { limit: 1, offset: 2 },
+          credentials: mockCredentials.none(),
+        });
+        expect(insidePhase2.pageInfo.hasNextPage).toBe(true);
+        const lastPage = await catalog.entities({
+          order: [{ field: 'spec.b', order: 'asc' }],
+          pagination: { limit: 2, offset: 3 },
+          credentials: mockCredentials.none(),
+        });
+        expect(lastPage.pageInfo.hasNextPage).toBe(false);
+
         // Phase 2 entities (no spec.b) are always ordered ASC by entity_id
         // regardless of the primary sort direction
         await expect(page(4, 0, 'asc')).resolves.toEqual([

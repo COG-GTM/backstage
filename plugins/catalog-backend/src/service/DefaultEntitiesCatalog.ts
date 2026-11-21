@@ -246,8 +246,7 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
   ): Promise<DbFinalEntitiesRow[]> {
     const db = this.database;
     const isPg = db.client.config.client === 'pg';
-    const wantedRows =
-      limit === undefined ? Number.MAX_SAFE_INTEGER : (offset ?? 0) + limit + 1;
+    const skip = offset ?? 0;
 
     const applyFilter = <T extends object>(
       query: Knex.QueryBuilder<T>,
@@ -269,17 +268,23 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
     // excluded here so they fall through to Phase 2 and sort in the same
     // NULLS-LAST bucket as entities that have no row for the key at all —
     // preserving the semantics of the previous LEFT JOIN approach.
-    let withField = db('search as order_0')
-      .innerJoin(
-        'final_entities',
-        'final_entities.entity_id',
-        'order_0.entity_id',
-      )
-      .where('order_0.key', primaryOrder.field)
-      .whereNotNull('order_0.value')
-      .whereNotNull('final_entities.final_entity')
-      .select<DbFinalEntitiesRow[]>('final_entities.*');
-    withField = applyFilter(withField);
+    const withFieldBase = () =>
+      applyFilter(
+        db('search as order_0')
+          .innerJoin(
+            'final_entities',
+            'final_entities.entity_id',
+            'order_0.entity_id',
+          )
+          .where('order_0.key', primaryOrder.field)
+          .whereNotNull('order_0.value')
+          .whereNotNull('final_entities.final_entity'),
+      );
+
+    // The offset is applied in the database so that skipped rows (and their
+    // entity bodies) are never transferred to the backend.
+    let withField =
+      withFieldBase().select<DbFinalEntitiesRow[]>('final_entities.*');
     withField = isPg
       ? withField.orderBy([
           { column: 'order_0.value', order: primaryOrder.order, nulls: 'last' },
@@ -290,17 +295,29 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
           { column: 'order_0.value', order: primaryOrder.order },
           { column: 'final_entities.entity_id', order: 'asc' },
         ]);
-    if (wantedRows < Number.MAX_SAFE_INTEGER) {
-      withField = withField.limit(wantedRows);
+    if (limit !== undefined) {
+      withField = withField.limit(limit + 1);
+    }
+    if (skip > 0) {
+      withField = withField.offset(skip);
     }
     const withFieldRows = await withField;
 
     // If phase 1 already covered everything we asked for, skip the second
     // phase entirely. This is the common UI case where every entity in the
     // filtered set has the order field.
-    if (withFieldRows.length >= wantedRows) {
-      const skip = offset ?? 0;
-      return withFieldRows.slice(skip, skip + (limit ?? wantedRows) + 1);
+    if (limit !== undefined && withFieldRows.length >= limit + 1) {
+      return withFieldRows;
+    }
+
+    // The offset only reaches into phase 2 when it skipped past every phase 1
+    // row. If phase 1 returned any rows it is exhausted at this point, so
+    // phase 2 starts from its beginning; otherwise count phase 1 to find how
+    // far into phase 2 the offset lands.
+    let withoutFieldOffset = 0;
+    if (withFieldRows.length === 0 && skip > 0) {
+      const [{ count }] = await withFieldBase().count({ count: '*' });
+      withoutFieldOffset = Math.max(0, skip - Number(count));
     }
 
     // Phase 2 -- entities that lack the order field, appended after.
@@ -321,18 +338,14 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
     );
     if (limit !== undefined) {
       // Phase 2 only contributes the rows that phase 1 didn't cover.
-      const remaining =
-        wantedRows - Math.min(withFieldRows.length, (offset ?? 0) + limit + 1);
-      withoutField = withoutField.limit(Math.max(0, remaining));
+      withoutField = withoutField.limit(limit + 1 - withFieldRows.length);
+    }
+    if (withoutFieldOffset > 0) {
+      withoutField = withoutField.offset(withoutFieldOffset);
     }
     const withoutFieldRows = await withoutField;
 
-    const combined = [...withFieldRows, ...withoutFieldRows];
-    if (limit === undefined) {
-      return combined.slice(offset ?? 0);
-    }
-    const skip = offset ?? 0;
-    return combined.slice(skip, skip + limit + 1);
+    return [...withFieldRows, ...withoutFieldRows];
   }
 
   async entitiesBatch(
